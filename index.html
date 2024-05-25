@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Simple Video Conference</title>
+  <style>
+    #videos {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    .video-wrapper {
+      margin: 10px;
+      border: 1px solid #ccc;
+    }
+    video {
+      width: 300px;
+      height: 200px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Simple Video Conference</h1>
+  <div>
+    <button onclick="becomeSender()">Become Sender</button>
+    <button onclick="becomeReceiver()">Become Receiver</button>
+  </div>
+  <div id="videos"></div>
+  <script>
+    let isSender = false;
+
+    const socket = new WebSocket('ws://localhost:8080'); // WebSocket server address
+
+    socket.addEventListener('open', function (event) {
+      console.log('Connected to the server');
+    });
+
+    socket.addEventListener('message', function (event) {
+      const data = JSON.parse(event.data);
+      if (data.type === 'offer') {
+        handleOffer(data.offer, data.id);
+      } else if (data.type === 'answer') {
+        handleAnswer(data.answer, data.id);
+      } else if (data.type === 'candidate') {
+        handleCandidate(data.candidate, data.id);
+      }
+    });
+
+    const peerConnectionConfig = {
+      iceServers: [
+        { urls: 'stun:stun.stunprotocol.org' },
+        { urls: 'stun:stun.l.google.com:19302' },
+      ],
+    };
+
+    let peerConnection;
+
+    function handleOffer(offer, id) {
+      peerConnection = new RTCPeerConnection(peerConnectionConfig);
+
+      peerConnection.addEventListener('icecandidate', function (event) {
+        if (event.candidate) {
+          socket.send(JSON.stringify({
+            type: 'candidate',
+            candidate: event.candidate,
+            id: id
+          }));
+        }
+      });
+
+      peerConnection.addEventListener('track', function (event) {
+        const video = document.createElement('video');
+        video.srcObject = event.streams[0];
+        video.autoplay = true;
+        video.playsinline = true;
+
+        const videoWrapper = document.createElement('div');
+        videoWrapper.className = 'video-wrapper';
+        videoWrapper.appendChild(video);
+
+        document.getElementById('videos').appendChild(videoWrapper);
+      });
+
+      const remoteDescription = new RTCSessionDescription(offer);
+      peerConnection.setRemoteDescription(remoteDescription)
+        .then(() => peerConnection.createAnswer())
+        .then(answer => peerConnection.setLocalDescription(answer))
+        .then(() => {
+          socket.send(JSON.stringify({
+            type: 'answer',
+            answer: peerConnection.localDescription,
+            id: id
+          }));
+        });
+    }
+
+    function handleAnswer(answer, id) {
+      const remoteDescription = new RTCSessionDescription(answer);
+      peerConnection.setRemoteDescription(remoteDescription);
+    }
+
+    function handleCandidate(candidate, id) {
+      peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+    }
+
+    function becomeSender() {
+      isSender = true;
+      createSenderPeerConnection();
+    }
+
+    function createSenderPeerConnection() {
+      navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+        .then(stream => {
+          const video = document.createElement('video');
+          video.srcObject = stream;
+          video.autoplay = true;
+          video.muted = true;
+          video.playsinline = true;
+
+          const videoWrapper = document.createElement('div');
+          videoWrapper.className = 'video-wrapper';
+          videoWrapper.appendChild(video);
+
+          document.getElementById('videos').appendChild(videoWrapper);
+
+          stream.getTracks().forEach(track => {
+            peerConnection = new RTCPeerConnection(peerConnectionConfig);
+            peerConnection.addTrack(track, stream);
+            peerConnection.createOffer()
+              .then(offer => peerConnection.setLocalDescription(offer))
+              .then(() => {
+                socket.send(JSON.stringify({
+                  type: 'offer',
+                  offer: peerConnection.localDescription
+                }));
+              });
+          });
+        })
+        .catch(error => console.error('Error accessing media devices:', error));
+    }
+
+    function becomeReceiver() {
+      isSender = false;
+      createReceiverPeerConnection();
+    }
+
+    function createReceiverPeerConnection() {
+      peerConnection = new RTCPeerConnection(peerConnectionConfig);
+
+      navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+        .then(stream => {
+          const video = document.createElement('video');
+          video.srcObject = stream;
+          video.autoplay = true;
+          video.playsinline = true;
+
+          const videoWrapper = document.createElement('div');
+          videoWrapper.className = 'video-wrapper';
+          videoWrapper.appendChild(video);
+
+          document.getElementById('videos').appendChild(videoWrapper);
+
+          stream.getTracks().forEach(track => {
+            peerConnection.addTrack(track, stream);
+          });
+        })
+        .catch(error => console.error('Error accessing media devices:', error));
+
+      peerConnection.addEventListener('icecandidate', function (event) {
+        if (event.candidate) {
+          socket.send(JSON.stringify({
+            type: 'candidate',
+            candidate: event.candidate,
+            id: 'receiver'
+          }));
+        }
+      });
+
+      socket.send(JSON.stringify({
+        type: 'ready',
+        id: 'receiver'
+      }));
+    }
+  </script>
+</body>
+</html>
